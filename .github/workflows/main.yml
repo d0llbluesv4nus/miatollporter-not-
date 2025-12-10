@@ -30,7 +30,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 python3-pip aria2 zip unzip tar brotli liblz4-tool \
           android-sdk-libsparse-utils p7zip-full e2fsprogs erofs-utils device-tree-compiler
-          pip3 install protobuf==3.20.* payload_dumper
+          pip3 install protobuf==3.20.*
+          # payload_dumper через pip удален, так как port.sh скачивает Go-версию
 
       - name: Prepare Scripts
         run: |
