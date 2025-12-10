@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Остановка при ошибках (кроме тех, где есть || true)
+# Остановка при ошибках
 set -e
 
 # Аргументы
@@ -28,28 +28,28 @@ wget -q "https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/paylo
 tar -xzf "$TOOLS_DIR/pdg.tar.gz" -C "$TOOLS_DIR"
 find "$TOOLS_DIR" -type f -name "payload-dumper-go" -exec mv {} "$TOOLS_DIR/pdg" \;
 
-# 3. Скачивание инструментов для запаковки (mkuserimg_mke2fs, e2fsdroid, make_ext4fs)
-# Используем проверенные бинарники от ErfanGSI
-echo "Скачивание бинарников сборки (mkuserimg, e2fsdroid)..."
-wget -q "https://github.com/erfanoabdi/ErfanGSIs/raw/9.0/tools/mkuserimg_mke2fs" -O "$TOOLS_DIR/mkuserimg_mke2fs"
-wget -q "https://github.com/erfanoabdi/ErfanGSIs/raw/9.0/tools/e2fsdroid" -O "$TOOLS_DIR/e2fsdroid"
-wget -q "https://github.com/erfanoabdi/ErfanGSIs/raw/9.0/tools/make_ext4fs" -O "$TOOLS_DIR/make_ext4fs"
-wget -q "https://github.com/erfanoabdi/ErfanGSIs/raw/9.0/tools/simg2img" -O "$TOOLS_DIR/simg2img"
+# 3. Скачивание инструментов для запаковки (ИСПРАВЛЕННЫЕ ССЫЛКИ)
+echo "Скачивание бинарников сборки..."
+TOOL_BASE="https://raw.githubusercontent.com/NipponGSIs/ErfanGSIs/master/tools"
+
+wget -q "$TOOL_BASE/mkuserimg_mke2fs" -O "$TOOLS_DIR/mkuserimg_mke2fs" || { echo "Failed to dl mkuserimg"; exit 1; }
+wget -q "$TOOL_BASE/e2fsdroid" -O "$TOOLS_DIR/e2fsdroid" || { echo "Failed to dl e2fsdroid"; exit 1; }
+wget -q "$TOOL_BASE/make_ext4fs" -O "$TOOLS_DIR/make_ext4fs" || { echo "Failed to dl make_ext4fs"; exit 1; }
+wget -q "$TOOL_BASE/simg2img" -O "$TOOLS_DIR/simg2img" || { echo "Failed to dl simg2img"; exit 1; }
 
 # Делаем все инструменты исполняемыми
 chmod +x "$TOOLS_DIR"/*
 
-# Добавляем tools в PATH, чтобы скрипты видели друг друга (mkuserimg вызывает e2fsdroid)
+# Добавляем tools в PATH
 export PATH="$TOOLS_DIR:$PATH"
 
-# Функция конвертации dat.br -> img (Исправленная)
+# Функция конвертации dat.br -> img
 convert_dat_br() {
     FILE="$1"
     NAME="$2"
     echo "Распаковка Brotli: $NAME..."
     brotli -d "$FILE" -o "$TEMP_DIR/$NAME.new.dat"
     echo "Конвертация sdat в img..."
-    # Берем transfer.list из текущей директории (.)
     python3 "$TOOLS_DIR/sdat2img.py" "${NAME}.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
     rm -f "$TEMP_DIR/$NAME.new.dat"
 }
@@ -114,10 +114,9 @@ if [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
     convert_dat_br "vendor.new.dat.br" "vendor"
     mv vendor.img "$TEMP_DIR/"
     
-    # Копируем Boot файлы (подавляем ошибки, если файлов нет)
-    cp boot.img "$OUT_DIR/" 2>/dev/null || echo "boot.img not found (skip)"
-    cp dtbo.img "$OUT_DIR/" 2>/dev/null || echo "dtbo.img not found (skip)"
-    cp vbmeta.img "$OUT_DIR/" 2>/dev/null || echo "vbmeta.img not found (skip)"
+    cp boot.img "$OUT_DIR/" 2>/dev/null || echo "skip boot"
+    cp dtbo.img "$OUT_DIR/" 2>/dev/null || echo "skip dtbo"
+    cp vbmeta.img "$OUT_DIR/" 2>/dev/null || echo "skip vbmeta"
     cd "$WORKDIR"
 fi
 
@@ -162,8 +161,6 @@ make_ext4() {
     
     if [ -d "$DIR" ]; then
         echo "Запаковка $NAME..."
-        # Используем скачанный mkuserimg_mke2fs
-        # Он требует sudo для чтения некоторых файлов, если права сбиты
         mkuserimg_mke2fs -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "$SIZE" -L "$NAME" -M "/$NAME" --inode_size 256
     fi
 }
