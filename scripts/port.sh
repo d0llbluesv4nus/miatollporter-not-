@@ -28,9 +28,10 @@ wget -q "https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/paylo
 tar -xzf "$TOOLS_DIR/pdg.tar.gz" -C "$TOOLS_DIR"
 find "$TOOLS_DIR" -type f -name "payload-dumper-go" -exec mv {} "$TOOLS_DIR/pdg" \;
 
-# 3. Скачивание инструментов для запаковки (ИСПРАВЛЕННЫЕ ССЫЛКИ)
+# 3. Скачивание инструментов для запаковки (ИСПРАВЛЕННАЯ ССЫЛКА)
 echo "Скачивание бинарников сборки..."
-TOOL_BASE="https://raw.githubusercontent.com/NipponGSIs/ErfanGSIs/master/tools"
+# Используем стабильное зеркало
+TOOL_BASE="https://raw.githubusercontent.com/TryToFly/ErfanGSIs/master/tools"
 
 wget -q "$TOOL_BASE/mkuserimg_mke2fs" -O "$TOOLS_DIR/mkuserimg_mke2fs" || { echo "Failed to dl mkuserimg"; exit 1; }
 wget -q "$TOOL_BASE/e2fsdroid" -O "$TOOLS_DIR/e2fsdroid" || { echo "Failed to dl e2fsdroid"; exit 1; }
