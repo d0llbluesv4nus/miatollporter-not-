@@ -1,0 +1,49 @@
+name: Miatoll Auto Porter
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_rom_url:
+        description: 'Ссылка на Source ROM (Порт, например, от Pixel/OnePlus)'
+        required: true
+      base_rom_url:
+        description: 'Ссылка на Base ROM (Miatoll Global Stable)'
+        required: true
+      rom_name:
+        description: 'Имя сборки (без пробелов)'
+        required: true
+        default: 'Miatoll_Port'
+
+jobs:
+  port:
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Cleanup Space
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Install System Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip aria2 zip unzip tar brotli liblz4-tool \
+          android-sdk-libsparse-utils p7zip-full e2fsprogs
+          pip3 install protobuf==3.20.* payload_dumper
+
+      - name: Prepare Script
+        run: |
+          mkdir -p scripts
+          chmod +x scripts/port.sh
+
+      - name: Run Porting Script
+        run: |
+          sudo bash scripts/port.sh "${{ github.event.inputs.source_rom_url }}" "${{ github.event.inputs.base_rom_url }}" "${{ github.event.inputs.rom_name }}"
+
+      - name: Upload Images
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.rom_name }}_Images
+          path: out/*.img
+          compression-level: 0 # Для скорости
