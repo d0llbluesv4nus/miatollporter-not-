@@ -35,10 +35,17 @@ convert_dat_br() {
     FILE="$1"
     NAME="$2"
     echo "Распаковка Brotli: $NAME..."
+    # Распаковываем тяжелый .new.dat во временную папку TEMP_DIR
     brotli -d "$FILE" -o "$TEMP_DIR/$NAME.new.dat"
+    
     echo "Конвертация sdat в img..."
-    python3 "$TOOLS_DIR/sdat2img.py" "$TEMP_DIR/$NAME.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
-    rm "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.transfer.list"
+    # ИСПРАВЛЕНИЕ: 
+    # 1. "$NAME.transfer.list" — берем из текущей папки (куда мы сделали cd перед вызовом)
+    # 2. "$TEMP_DIR/$NAME.new.dat" — берем распакованный dat из temp
+    python3 "$TOOLS_DIR/sdat2img.py" "${NAME}.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
+    
+    # Удаляем огромный временный файл
+    rm -f "$TEMP_DIR/$NAME.new.dat"
 }
 
 # Функция извлечения содержимого IMG (Поддержка EXT4 и EROFS)
@@ -83,8 +90,7 @@ unzip -o "$INPUT_DIR/source.zip" -d "$TEMP_DIR/source_extracted"
 
 if [ -f "$TEMP_DIR/source_extracted/payload.bin" ]; then
     echo "Тип Source: Payload.bin"
-    # Используем payload-dumper-go с фильтрацией (качаем только нужное)
-    # -p указывает разделы, -o папку выхода
+    # Используем payload-dumper-go с фильтрацией
     "$TOOLS_DIR/pdg" -o "$TEMP_DIR/source_imgs" -p "system,product,system_ext" "$TEMP_DIR/source_extracted/payload.bin"
     
     # Перемещаем (имена могут быть system.img или просто system)
@@ -98,7 +104,7 @@ elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
     convert_dat_br "system.new.dat.br" "system"
     [ -f "product.new.dat.br" ] && convert_dat_br "product.new.dat.br" "product"
     [ -f "system_ext.new.dat.br" ] && convert_dat_br "system_ext.new.dat.br" "system_ext"
-    mv *.img "$TEMP_DIR/"
+    # Перемещаем полученные img в корень temp (они создаются там функцией, но проверим)
     cd "$WORKDIR"
 fi
 
@@ -107,13 +113,14 @@ mkdir -p "$TEMP_DIR/base_extracted"
 unzip -o "$INPUT_DIR/base.zip" -d "$TEMP_DIR/base_extracted"
 
 if [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
+    echo "Тип Base: Dat.br (Miatoll)"
     cd "$TEMP_DIR/base_extracted"
     convert_dat_br "vendor.new.dat.br" "vendor"
-    mv vendor.img "$TEMP_DIR/"
+    
     # Перемещаем boot файлы сразу в output
-    cp boot.img "$OUT_DIR/"
-    cp dtbo.img "$OUT_DIR/" 2>/dev/null || true
-    cp vbmeta.img "$OUT_DIR/" 2>/dev/null || true
+    cp boot.img "$OUT_DIR/" || true
+    cp dtbo.img "$OUT_DIR/" || true
+    cp vbmeta.img "$OUT_DIR/" || true
     cd "$WORKDIR"
 fi
 
@@ -121,17 +128,18 @@ fi
 rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
 
 echo "=== [3/6] Распаковка файловых систем ==="
+# Извлекаем в папки
 extract_img "$TEMP_DIR/system.img" "$TEMP_DIR/d_system"
 extract_img "$TEMP_DIR/product.img" "$TEMP_DIR/d_product"
 extract_img "$TEMP_DIR/system_ext.img" "$TEMP_DIR/d_system_ext"
 extract_img "$TEMP_DIR/vendor.img" "$TEMP_DIR/d_vendor"
 
-# Удаляем тяжелые исходные .img файлы
+# Удаляем исходные .img файлы для экономии места
 rm -f "$TEMP_DIR/"*.img
 
 echo "=== [4/6] Патчинг для Miatoll ==="
 
-# Определяем пути к build.prop
+# Определяем путь к build.prop (учет System-As-Root)
 if [ -f "$TEMP_DIR/d_system/system/build.prop" ]; then
     SYS_ROOT="$TEMP_DIR/d_system/system"
 else
@@ -146,15 +154,15 @@ if [ -f "$SYS_PROP" ]; then
     sed -i 's/ro.product.system.device=.*/ro.product.system.device=miatoll/' "$SYS_PROP"
     sed -i 's/ro.product.model=.*/ro.product.model=Redmi Note 9 Pro/' "$SYS_PROP"
     sed -i 's/ro.product.name=.*/ro.product.name=miatoll/' "$SYS_PROP"
-    # Фиксы
+    # Дополнительные фиксы
     echo "ro.secure=0" >> "$SYS_PROP"
     echo "ro.adb.secure=0" >> "$SYS_PROP"
     echo "ro.debuggable=1" >> "$SYS_PROP"
 else
-    echo "WARN: build.prop не найден в $SYS_ROOT"
+    echo "ВНИМАНИЕ: build.prop не найден! Путь: $SYS_PROP"
 fi
 
-# 2. Удаление dfps (Dynamic FPS)
+# 2. Удаление dfps (Dynamic FPS, часто вызывает бутлуп на портах)
 rm -rf "$SYS_ROOT/bin/dfps"
 rm -rf "$TEMP_DIR/d_vendor/bin/dfps"
 
@@ -167,10 +175,12 @@ make_ext4() {
     
     if [ -d "$DIR" ]; then
         echo "Запаковка $NAME..."
+        # Используем mkuserimg_mke2fs (из пакета android-sdk-libsparse-utils/e2fsprogs)
         mkuserimg_mke2fs -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "$SIZE" -L "$NAME" -M "/$NAME" --inode_size 256
     fi
 }
 
+# Размеры разделов с небольшим запасом для Miatoll
 make_ext4 "$TEMP_DIR/d_system" "system" "3500M"
 make_ext4 "$TEMP_DIR/d_vendor" "vendor" "1500M"
 make_ext4 "$TEMP_DIR/d_product" "product" "2500M"
