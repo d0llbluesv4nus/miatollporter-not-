@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Не останавливаться сразу при ошибках (будем обрабатывать их вручную)
-set +e
+# Останавливать скрипт при ошибках, чтобы не делать лишнюю работу
+set -e
 
 # Аргументы
 SOURCE_URL="$1"
@@ -61,9 +61,13 @@ convert_dat_br() {
     FILE="$1"
     NAME="$2"
     echo "Распаковка Brotli: $NAME..."
-    brotli -d "$FILE" -o "$TEMP_DIR/$NAME.new.dat"
-    python3 "$TOOLS_DIR/sdat2img.py" "${NAME}.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
-    rm -f "$TEMP_DIR/$NAME.new.dat"
+    if [ -f "$FILE" ]; then
+        brotli -d "$FILE" -o "$TEMP_DIR/$NAME.new.dat"
+        python3 "$TOOLS_DIR/sdat2img.py" "${NAME}.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
+        rm -f "$TEMP_DIR/$NAME.new.dat"
+    else
+        echo "Файл $FILE не найден, пропускаем..."
+    fi
 }
 
 extract_img() {
@@ -114,8 +118,8 @@ elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
     echo "Тип Source: Dat.br"
     cd "$TEMP_DIR/source_extracted"
     convert_dat_br "system.new.dat.br" "system"
-    [ -f "product.new.dat.br" ] && convert_dat_br "product.new.dat.br" "product"
-    [ -f "system_ext.new.dat.br" ] && convert_dat_br "system_ext.new.dat.br" "system_ext"
+    convert_dat_br "product.new.dat.br" "product"
+    convert_dat_br "system_ext.new.dat.br" "system_ext"
     mv *.img "$TEMP_DIR/" 2>/dev/null || true
     cd "$WORKDIR"
 fi
@@ -128,18 +132,11 @@ echo "Проверка Base ROM..."
 if [ -f "$TEMP_DIR/base_extracted/payload.bin" ]; then
     echo ">> Base: Payload.bin найден."
     
-    # Сначала пытаемся найти boot внутри payload
-    echo "Список разделов в Payload:"
-    "$TOOLS_DIR/pdg" -l "$TEMP_DIR/base_extracted/payload.bin" | grep -i "boot" || true
+    # Извлекаем все нужные разделы разом
+    "$TOOLS_DIR/pdg" -o "$TEMP_DIR/base_imgs" -p "vendor,boot,dtbo,vbmeta" "$TEMP_DIR/base_extracted/payload.bin"
     
-    # Распаковываем Vendor
-    "$TOOLS_DIR/pdg" -o "$TEMP_DIR/base_imgs" -p "vendor" "$TEMP_DIR/base_extracted/payload.bin"
+    # Распределяем файлы
     find "$TEMP_DIR/base_imgs" -name "vendor.img" -exec mv {} "$TEMP_DIR/vendor.img" \;
-    
-    # Распаковываем Boot и остальное (отдельно, чтобы не упало при ошибке vendor)
-    "$TOOLS_DIR/pdg" -o "$TEMP_DIR/base_imgs" -p "boot,dtbo,vbmeta" "$TEMP_DIR/base_extracted/payload.bin"
-    
-    # Ищем файлы
     find "$TEMP_DIR/base_imgs" -name "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \;
     find "$TEMP_DIR/base_imgs" -name "dtbo.img" -exec cp {} "$OUT_DIR/dtbo.img" \;
     find "$TEMP_DIR/base_imgs" -name "vbmeta.img" -exec cp {} "$OUT_DIR/vbmeta.img" \;
@@ -149,18 +146,27 @@ elif [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
     cd "$TEMP_DIR/base_extracted"
     convert_dat_br "vendor.new.dat.br" "vendor"
     cd "$WORKDIR"
+    
+    # Ищем boot.img среди файлов
+    find "$TEMP_DIR/base_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
 fi
 
-# Если boot.img все еще нет, ищем в папке (вдруг он не в payload, а просто файлом)
+# Аварийный поиск boot.img, если предыдущие методы не сработали
 if [ ! -f "$TEMP_DIR/boot.img" ]; then
-    echo "Boot.img не найден в payload/dat, ищем в папках..."
+    echo "ВНИМАНИЕ: boot.img не найден стандартными методами. Ищем рекурсивно..."
     find "$TEMP_DIR/base_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
+fi
+
+# Если все еще нет - берем из Source (заглушка, чтобы сборка завершилась)
+if [ ! -f "$TEMP_DIR/boot.img" ]; then
+    echo "КРИТИЧНО: boot.img не найден в Base. Используем boot из Source..."
+    find "$TEMP_DIR/source_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
 fi
 
 rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
 
 echo "=== [3/7] Распаковка файловых систем ==="
-# Проверяем наличие образов перед распаковкой
+# Проверяем наличие образов
 [ -f "$TEMP_DIR/system.img" ] && extract_img "$TEMP_DIR/system.img" "$TEMP_DIR/d_system"
 [ -f "$TEMP_DIR/product.img" ] && extract_img "$TEMP_DIR/product.img" "$TEMP_DIR/d_product"
 [ -f "$TEMP_DIR/system_ext.img" ] && extract_img "$TEMP_DIR/system_ext.img" "$TEMP_DIR/d_system_ext"
@@ -170,29 +176,30 @@ rm -f "$TEMP_DIR/"*.img
 
 echo "=== [4/7] Патчинг Boot (Permissive) ==="
 if [ -f "$TEMP_DIR/boot.img" ]; then
-    echo "Патчинг Base boot.img на Permissive..."
+    echo "Патчинг boot.img на Permissive..."
     mkdir -p "$TEMP_DIR/boot_edit"
     cp "$TEMP_DIR/boot.img" "$TEMP_DIR/boot_edit/boot.img"
     cd "$TEMP_DIR/boot_edit"
     
-    "$TOOLS_DIR/magiskboot" unpack boot.img
+    "$TOOLS_DIR/magiskboot" unpack boot.img || true
+    
     if [ -f "header" ]; then
-        "$TOOLS_DIR/magiskboot" hexpatch header \
-        "736b69705f696e697472616d667300" \
-        "736b69705f696e697472616d667320616e64726f6964626f6f742e73656c696e75783d7065726d69737369766500" || true
+        # Патчим заголовок (без line continuation для надежности)
+        "$TOOLS_DIR/magiskboot" hexpatch header "736b69705f696e697472616d667300" "736b69705f696e697472616d667320616e64726f6964626f6f742e73656c696e75783d7065726d69737369766500" || true
         sed -i 's/cmdline=/cmdline=androidboot.selinux=permissive /' header
     fi
-    "$TOOLS_DIR/magiskboot" repack boot.img
-    mv new-boot.img "$OUT_DIR/boot.img" 2>/dev/null || cp boot.img "$OUT_DIR/boot.img"
+    
+    "$TOOLS_DIR/magiskboot" repack boot.img || true
+    
+    if [ -f "new-boot.img" ]; then
+        mv new-boot.img "$OUT_DIR/boot.img"
+    else
+        echo "Ошибка перепаковки, копируем оригинал..."
+        cp "$TEMP_DIR/boot.img" "$OUT_DIR/boot.img"
+    fi
     cd "$WORKDIR"
 else
-    echo "ВНИМАНИЕ: Base boot.img не найден!"
-    # Крайняя мера: пытаемся найти boot в Source, чтобы хоть что-то было
-    echo "Пытаемся использовать boot из Source (как заглушку)..."
-    find "$TEMP_DIR/source_imgs" -name "boot.img" -exec cp {} "$OUT_DIR/boot.img" \;
-    if [ ! -f "$OUT_DIR/boot.img" ]; then
-        echo "КРИТИЧЕСКАЯ ОШИБКА: Boot.img не найден нигде."
-    fi
+    echo "ОШИБКА: boot.img отсутствует полностью."
 fi
 
 echo "=== [5/7] Патчинг системы для Miatoll ==="
@@ -242,32 +249,7 @@ make_ext4 "$TEMP_DIR/d_product" "product"
 make_ext4 "$TEMP_DIR/d_system_ext" "system_ext"
 
 echo "=== [7/7] Завершено ==="
-ls -lh "$OUT_DIR"    python3 "$TOOLS_DIR/sdat2img.py" "${NAME}.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
-    rm -f "$TEMP_DIR/$NAME.new.dat"
-}
-
-extract_img() {
-    IMAGE="$1"
-    FOLDER="$2"
-    if [ ! -f "$IMAGE" ]; then return; fi
-    echo "Обработка образа: $(basename "$IMAGE")"
-    mkdir -p "$FOLDER"
-    
-    if file -sL "$IMAGE" | grep -q "EROFS"; then
-        echo " >> Обнаружен EROFS. Распаковка..."
-        fsck.erofs --extract="$FOLDER" "$IMAGE"
-    else
-        echo " >> Обнаружен EXT4/Sparse. Монтирование..."
-        if file -sL "$IMAGE" | grep -q "sparse"; then
-            simg2img "$IMAGE" "$TEMP_DIR/raw.img"
-            IMG_TO_MOUNT="$TEMP_DIR/raw.img"
-        else
-            IMG_TO_MOUNT="$IMAGE"
-        fi
-        
-        mkdir -p "$TEMP_DIR/mnt_tmp"
-        sudo mount -o loop,ro "$IMG_TO_MOUNT" "$TEMP_DIR/mnt_tmp"
-        sudo cp -a "$TEMP_DIR/mnt_tmp/." "$FOLDER/"
+ls -lh "$OUT_DIR"OLDER/"
         sudo umount "$TEMP_DIR/mnt_tmp"
         rm -rf "$TEMP_DIR/mnt_tmp" "$TEMP_DIR/raw.img"
         sudo chown -R $(whoami) "$FOLDER"
