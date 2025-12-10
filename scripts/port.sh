@@ -15,16 +15,12 @@ OUT_DIR="$WORKDIR/out"
 TEMP_DIR="$WORKDIR/temp"
 TOOLS_DIR="$WORKDIR/tools"
 
-echo "=== [0/7] Инициализация и Установка пакетов ==="
-# Устанавливаем системные утилиты для работы с образами Android
-sudo apt-get update
-sudo apt-get install -y android-sdk-libsparse-utils brotli unzip zip wget curl
-
+echo "=== [0/7] Инициализация и Загрузка инструментов ==="
 mkdir -p "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 
-# --- ЗАГРУЗКА ИНСТРУМЕНТОВ ---
+# --- ФУНКЦИИ ЗАГРУЗКИ ---
 
-# 1. Payload Dumper Go
+# 1. Payload Dumper
 if [ ! -f "$TOOLS_DIR/pdg" ]; then
     echo "Скачивание payload-dumper-go..."
     wget -q "https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/payload-dumper-go_1.2.2_linux_amd64.tar.gz" -O "$TOOLS_DIR/pdg.tar.gz"
@@ -33,7 +29,7 @@ if [ ! -f "$TOOLS_DIR/pdg" ]; then
     chmod +x "$TOOLS_DIR/pdg"
 fi
 
-# 2. MagiskBoot (Из официального APK)
+# 2. MagiskBoot (Официальный APK метод)
 if [ ! -f "$TOOLS_DIR/magiskboot" ]; then
     echo "Скачивание magiskboot..."
     wget -q "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk" -O "$TEMP_DIR/magisk.apk"
@@ -48,11 +44,18 @@ if [ ! -f "$TOOLS_DIR/sdat2img.py" ]; then
     wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
 fi
 
-# Делаем всё исполняемым
+# 4. mkuserimg_mke2fs
+if [ ! -f "$TOOLS_DIR/mkuserimg_mke2fs" ]; then
+    echo "Клонирование инструментов ErfanGSIs..."
+    git clone --depth 1 https://github.com/erfanoabdi/ErfanGSIs.git "$TEMP_DIR/ErfanGSIs"
+    cp -r "$TEMP_DIR/ErfanGSIs/tools/"* "$TOOLS_DIR/"
+    rm -rf "$TEMP_DIR/ErfanGSIs"
+fi
+
 chmod +x "$TOOLS_DIR"/*
 export PATH="$TOOLS_DIR:$PATH"
 
-# --- ФУНКЦИИ ---
+# --- ФУНКЦИИ ОБРАБОТКИ ---
 
 convert_dat_br() {
     FILE="$1"
@@ -120,41 +123,41 @@ elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
     cd "$WORKDIR"
 fi
 
-# 2. Base (Откуда берем вендор и ядро) - ИСПРАВЛЕНО
+# 2. Base (УЛУЧШЕННЫЙ БЛОК: Поддержка Payload и DAT)
 mkdir -p "$TEMP_DIR/base_extracted"
 unzip -o "$INPUT_DIR/base.zip" -d "$TEMP_DIR/base_extracted"
 
-# Проверка Payload для Base (Важно для MIUI 13/14)
+echo "Проверка типа Base ROM..."
 if [ -f "$TEMP_DIR/base_extracted/payload.bin" ]; then
-    echo "Тип Base: Payload.bin"
+    echo ">> Base обнаружен как Payload.bin! (Современный формат)"
+    # Извлекаем vendor, boot, dtbo, vbmeta
     "$TOOLS_DIR/pdg" -o "$TEMP_DIR/base_imgs" -p "vendor,boot,dtbo,vbmeta" "$TEMP_DIR/base_extracted/payload.bin"
     
-    # Перемещаем файлы
+    # Переносим файлы
     find "$TEMP_DIR/base_imgs" -name "vendor.img" -exec mv {} "$TEMP_DIR/vendor.img" \;
     find "$TEMP_DIR/base_imgs" -name "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \;
     find "$TEMP_DIR/base_imgs" -name "dtbo.img" -exec cp {} "$OUT_DIR/dtbo.img" \;
     find "$TEMP_DIR/base_imgs" -name "vbmeta.img" -exec cp {} "$OUT_DIR/vbmeta.img" \;
 
 elif [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
-    echo "Тип Base: Dat.br"
+    echo ">> Base обнаружен как DAT.BR! (Классический формат)"
     cd "$TEMP_DIR/base_extracted"
     convert_dat_br "vendor.new.dat.br" "vendor"
     cd "$WORKDIR"
     
-    find "$TEMP_DIR/base_extracted" -name "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \;
-    find "$TEMP_DIR/base_extracted" -name "dtbo.img" -exec cp {} "$OUT_DIR/dtbo.img" \;
-    find "$TEMP_DIR/base_extracted" -name "vbmeta.img" -exec cp {} "$OUT_DIR/vbmeta.img" \;
+    # Ищем boot.img рекурсивно и нечувствительно к регистру
+    find "$TEMP_DIR/base_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
+    find "$TEMP_DIR/base_extracted" -type f -iname "dtbo.img" -exec cp {} "$OUT_DIR/dtbo.img" \; -quit
+    find "$TEMP_DIR/base_extracted" -type f -iname "vbmeta.img" -exec cp {} "$OUT_DIR/vbmeta.img" \; -quit
+else
+    echo "!! Не удалось определить формат Base ROM !!"
+    echo "Список файлов в архиве Base:"
+    ls -R "$TEMP_DIR/base_extracted"
 fi
 
 rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
 
 echo "=== [3/7] Распаковка файловых систем ==="
-# Проверяем, что вендор распаковался
-if [ ! -f "$TEMP_DIR/vendor.img" ]; then
-    echo "ОШИБКА: vendor.img не найден! Проверьте Base ROM."
-    exit 1
-fi
-
 extract_img "$TEMP_DIR/system.img" "$TEMP_DIR/d_system"
 extract_img "$TEMP_DIR/product.img" "$TEMP_DIR/d_product"
 extract_img "$TEMP_DIR/system_ext.img" "$TEMP_DIR/d_system_ext"
@@ -182,11 +185,14 @@ if [ -f "$TEMP_DIR/boot.img" ]; then
     if [ -f "new-boot.img" ]; then
         mv new-boot.img "$OUT_DIR/boot.img"
     else
+        echo "Ошибка перепаковки, используем стоковый boot..."
         cp "$TEMP_DIR/boot.img" "$OUT_DIR/boot.img"
     fi
     cd "$WORKDIR"
 else
-    echo "КРИТИЧНО: boot.img всё ещё не найден! (Не удалось извлечь из Base)"
+    echo "ОШИБКА: boot.img не найден!"
+    echo "Содержимое TEMP_DIR:"
+    ls -R "$TEMP_DIR"
     exit 1
 fi
 
@@ -227,8 +233,7 @@ make_ext4() {
         echo "Размер: ${NEW_SIZE}M"
         
         echo "Запаковка $NAME.img..."
-        # Используем системную команду mkuserimg (из пакета android-sdk-libsparse-utils)
-        mkuserimg -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "${NEW_SIZE}M" -L "$NAME" -M "/$NAME" --inode_size 256
+        "$TOOLS_DIR/mkuserimg_mke2fs" -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "${NEW_SIZE}M" -L "$NAME" -M "/$NAME" --inode_size 256
     fi
 }
 
@@ -238,39 +243,7 @@ make_ext4 "$TEMP_DIR/d_product" "product"
 make_ext4 "$TEMP_DIR/d_system_ext" "system_ext"
 
 echo "=== [7/7] Завершено ==="
-ls -lh "$OUT_DIR"_DIR/source_imgs" -p "system,product,system_ext" "$TEMP_DIR/source_extracted/payload.bin"
-    find "$TEMP_DIR/source_imgs" -name "system.img" -exec mv {} "$TEMP_DIR/system.img" \;
-    find "$TEMP_DIR/source_imgs" -name "product.img" -exec mv {} "$TEMP_DIR/product.img" \;
-    find "$TEMP_DIR/source_imgs" -name "system_ext.img" -exec mv {} "$TEMP_DIR/system_ext.img" \;
-elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
-    echo "Тип Source: Dat.br"
-    cd "$TEMP_DIR/source_extracted"
-    convert_dat_br "system.new.dat.br" "system"
-    [ -f "product.new.dat.br" ] && convert_dat_br "product.new.dat.br" "product"
-    [ -f "system_ext.new.dat.br" ] && convert_dat_br "system_ext.new.dat.br" "system_ext"
-    mv *.img "$TEMP_DIR/" 2>/dev/null || true
-    cd "$WORKDIR"
-fi
-
-# 2. Base
-mkdir -p "$TEMP_DIR/base_extracted"
-unzip -o "$INPUT_DIR/base.zip" -d "$TEMP_DIR/base_extracted"
-
-if [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
-    echo "Тип Base: Dat.br"
-    cd "$TEMP_DIR/base_extracted"
-    convert_dat_br "vendor.new.dat.br" "vendor"
-    
-    if [ -f "boot.img" ]; then cp boot.img "$TEMP_DIR/boot.img"; fi
-    cp dtbo.img "$OUT_DIR/" 2>/dev/null || true
-    cp vbmeta.img "$OUT_DIR/" 2>/dev/null || true
-    cd "$WORKDIR"
-fi
-
-rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
-
-echo "=== [3/7] Распаковка файловых систем ==="
-extract_img "$TEMP_DIR/system.img" "$TEMP_DIR/d_system"
+ls -lh "$OUT_DIR"DIR/d_system"
 extract_img "$TEMP_DIR/product.img" "$TEMP_DIR/d_product"
 extract_img "$TEMP_DIR/system_ext.img" "$TEMP_DIR/d_system_ext"
 extract_img "$TEMP_DIR/vendor.img" "$TEMP_DIR/d_vendor"
