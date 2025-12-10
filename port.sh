@@ -1,179 +1,179 @@
 #!/bin/bash
 
-# =================CONFIG=================
+# Остановка при ошибках
+set -e
+
+# Аргументы
 SOURCE_URL="$1"
 BASE_URL="$2"
 ROM_NAME="$3"
 
-# Пути
+# Переменные путей
 WORKDIR=$(pwd)
-INPUT="$WORKDIR/input"
-OUT="$WORKDIR/out"
-TEMP="$WORKDIR/temp"
-TOOLS="$WORKDIR/tools"
+INPUT_DIR="$WORKDIR/input"
+OUT_DIR="$WORKDIR/out"
+TEMP_DIR="$WORKDIR/temp"
+TOOLS_DIR="$WORKDIR/tools"
 
-# Создание папок
-mkdir -p "$INPUT" "$OUT" "$TEMP" "$TOOLS"
+echo "=== [0/6] Инициализация ==="
+mkdir -p "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 
-# =================TOOLS SETUP=================
-echo "=== [0/6] Настройка инструментов ==="
-
-# Скачиваем sdat2img
-wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS/sdat2img.py"
-chmod +x "$TOOLS/sdat2img.py"
-
-# Скачиваем make_ext4fs и img2sdat (из надежного источника, например, Erfan toolset)
-# Для упрощения используем системный mkuserimg_mke2fs, если он есть, или качаем статику
-# В Ubuntu 22.04 есть mkuserimg_mke2fs в пакете android-sdk-ext4-utils (мы установили e2fsprogs и sparse-utils)
+# Скачивание sdat2img (конвертер для MIUI прошивок)
+wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
+chmod +x "$TOOLS_DIR/sdat2img.py"
 
 # Функция конвертации dat.br -> img
 convert_dat_br() {
     FILE="$1"
     NAME="$2"
-    echo "Decompressing $NAME..."
-    brotli -d "$FILE" -o "$TEMP/$NAME.new.dat"
-    python3 "$TOOLS/sdat2img.py" "$TEMP/$NAME.transfer.list" "$TEMP/$NAME.new.dat" "$TEMP/$NAME.img"
-    rm "$TEMP/$NAME.new.dat"
+    echo "Распаковка Brotli: $NAME..."
+    brotli -d "$FILE" -o "$TEMP_DIR/$NAME.new.dat"
+    echo "Конвертация sdat в img..."
+    python3 "$TOOLS_DIR/sdat2img.py" "$TEMP_DIR/$NAME.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
+    rm "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.transfer.list"
 }
 
-# =================DOWNLOAD=================
+# Функция извлечения содержимого IMG (Поддержка EXT4 и EROFS)
+extract_img() {
+    IMAGE="$1"
+    FOLDER="$2"
+    
+    if [ ! -f "$IMAGE" ]; then return; fi
+    
+    echo "Обработка образа: $(basename "$IMAGE")"
+    mkdir -p "$FOLDER"
+    
+    # Проверка на EROFS
+    if file -sL "$IMAGE" | grep -q "EROFS"; then
+        echo " >> Обнаружен EROFS. Распаковка..."
+        fsck.erofs --extract="$FOLDER" "$IMAGE"
+    else
+        echo " >> Обнаружен EXT4/Sparse. Конвертация и монтирование..."
+        # Попытка разжать sparse, если нужно
+        simg2img "$IMAGE" "$TEMP_DIR/raw.img" 2>/dev/null || cp "$IMAGE" "$TEMP_DIR/raw.img"
+        
+        # Монтируем и копируем содержимое (чтобы избавиться от Read-Only)
+        mkdir -p "$TEMP_DIR/mnt_tmp"
+        mount -o loop,ro "$TEMP_DIR/raw.img" "$TEMP_DIR/mnt_tmp"
+        cp -a "$TEMP_DIR/mnt_tmp/." "$FOLDER/"
+        umount "$TEMP_DIR/mnt_tmp"
+        rm -rf "$TEMP_DIR/mnt_tmp" "$TEMP_DIR/raw.img"
+    fi
+}
+
 echo "=== [1/6] Загрузка прошивок ==="
-aria2c -x16 -s16 "$SOURCE_URL" -d "$INPUT" -o source.zip
-aria2c -x16 -s16 "$BASE_URL" -d "$INPUT" -o base.zip
+echo "Скачивание Source ROM..."
+aria2c -x16 -s16 -k1M "$SOURCE_URL" -d "$INPUT_DIR" -o source.zip
+echo "Скачивание Base ROM..."
+aria2c -x16 -s16 -k1M "$BASE_URL" -d "$INPUT_DIR" -o base.zip
 
-# =================EXTRACT=================
-echo "=== [2/6] Распаковка ==="
+echo "=== [2/6] Извлечение образов ==="
 
-mkdir -p "$TEMP/source_raw" "$TEMP/base_raw"
+# 1. Обработка Source
+mkdir -p "$TEMP_DIR/source_extracted"
+unzip -o "$INPUT_DIR/source.zip" -d "$TEMP_DIR/source_extracted"
 
-# Распаковка Source
-unzip -o "$INPUT/source.zip" -d "$TEMP/source_raw"
-if [ -f "$TEMP/source_raw/payload.bin" ]; then
-    echo "Обнаружен payload.bin в Source..."
-    payload_dumper --input_file "$TEMP/source_raw/payload.bin" --output_directory "$TEMP/source_imgs"
-    # Перемещаем нужные imgs
-    mv "$TEMP/source_imgs/system.img" "$TEMP/system.img"
-    mv "$TEMP/source_imgs/product.img" "$TEMP/product.img" 2>/dev/null
-    mv "$TEMP/source_imgs/system_ext.img" "$TEMP/system_ext.img" 2>/dev/null
-elif [ -f "$TEMP/source_raw/system.new.dat.br" ]; then
-    echo "Обнаружен dat.br в Source..."
-    cd "$TEMP/source_raw"
+if [ -f "$TEMP_DIR/source_extracted/payload.bin" ]; then
+    echo "Тип Source: Payload.bin"
+    payload_dumper --input_file "$TEMP_DIR/source_extracted/payload.bin" --output_directory "$TEMP_DIR/source_imgs"
+    # Перемещаем нужные разделы
+    mv "$TEMP_DIR/source_imgs/system.img" "$TEMP_DIR/system.img"
+    mv "$TEMP_DIR/source_imgs/product.img" "$TEMP_DIR/product.img" 2>/dev/null || true
+    mv "$TEMP_DIR/source_imgs/system_ext.img" "$TEMP_DIR/system_ext.img" 2>/dev/null || true
+elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
+    echo "Тип Source: Dat.br"
+    cd "$TEMP_DIR/source_extracted"
     convert_dat_br "system.new.dat.br" "system"
-    convert_dat_br "product.new.dat.br" "product"
-    convert_dat_br "system_ext.new.dat.br" "system_ext"
-    mv system.img "$TEMP/"
-    mv product.img "$TEMP/" 2>/dev/null
-    mv system_ext.img "$TEMP/" 2>/dev/null
+    [ -f "product.new.dat.br" ] && convert_dat_br "product.new.dat.br" "product"
+    [ -f "system_ext.new.dat.br" ] && convert_dat_br "system_ext.new.dat.br" "system_ext"
+    mv *.img "$TEMP_DIR/"
     cd "$WORKDIR"
 fi
 
-# Распаковка Base (Miatoll)
-# Нам нужен только Vendor и Boot от базы
-unzip -o "$INPUT/base.zip" -d "$TEMP/base_raw"
-if [ -f "$TEMP/base_raw/vendor.new.dat.br" ]; then
-    cd "$TEMP/base_raw"
+# 2. Обработка Base (Берем Vendor, Boot, DTBO)
+mkdir -p "$TEMP_DIR/base_extracted"
+unzip -o "$INPUT_DIR/base.zip" -d "$TEMP_DIR/base_extracted"
+
+# Логика для Miatoll Base (обычно это .dat.br)
+if [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
+    cd "$TEMP_DIR/base_extracted"
     convert_dat_br "vendor.new.dat.br" "vendor"
-    mv vendor.img "$TEMP/"
-    mv boot.img "$OUT/" # Сразу в выходную папку
-    mv dtbo.img "$OUT/" 2>/dev/null
+    mv vendor.img "$TEMP_DIR/"
+    # Перемещаем boot файлы сразу в output
+    cp boot.img "$OUT_DIR/"
+    cp dtbo.img "$OUT_DIR/" 2>/dev/null || true
+    cp vbmeta.img "$OUT_DIR/" 2>/dev/null || true
     cd "$WORKDIR"
 fi
 
-# =================MOUNT & PATCH=================
-echo "=== [3/6] Монтирование и Патчинг ==="
+# Очистка места после распаковки
+rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
 
-mkdir -p "$TEMP/mnt_system" "$TEMP/mnt_vendor" "$TEMP/mnt_product"
+echo "=== [3/6] Распаковка файловых систем ==="
+# Мы распаковываем всё в папки, чтобы можно было редактировать даже EROFS
+extract_img "$TEMP_DIR/system.img" "$TEMP_DIR/d_system"
+extract_img "$TEMP_DIR/product.img" "$TEMP_DIR/d_product"
+extract_img "$TEMP_DIR/system_ext.img" "$TEMP_DIR/d_system_ext"
+extract_img "$TEMP_DIR/vendor.img" "$TEMP_DIR/d_vendor"
 
-# Конвертация sparse в raw (чтобы смонтировать)
-if [ -f "$TEMP/system.img" ]; then
-    simg2img "$TEMP/system.img" "$TEMP/system_raw.img" 2>/dev/null || mv "$TEMP/system.img" "$TEMP/system_raw.img"
-    sudo mount -o loop,rw "$TEMP/system_raw.img" "$TEMP/mnt_system"
+# Удаляем тяжелые исходные .img файлы
+rm "$TEMP_DIR/"*.img
+
+echo "=== [4/6] Патчинг для Miatoll ==="
+
+# Определяем пути к build.prop (учет SAR - System As Root)
+if [ -f "$TEMP_DIR/d_system/system/build.prop" ]; then
+    SYS_ROOT="$TEMP_DIR/d_system/system"
+else
+    SYS_ROOT="$TEMP_DIR/d_system"
 fi
+SYS_PROP="$SYS_ROOT/build.prop"
 
-if [ -f "$TEMP/vendor.img" ]; then
-    simg2img "$TEMP/vendor.img" "$TEMP/vendor_raw.img" 2>/dev/null || mv "$TEMP/vendor.img" "$TEMP/vendor_raw.img"
-    sudo mount -o loop,rw "$TEMP/vendor_raw.img" "$TEMP/mnt_vendor"
-fi
+# 1. Изменение идентификаторов в system
+echo "Патчинг build.prop..."
+sed -i 's/ro.product.device=.*/ro.product.device=miatoll/' "$SYS_PROP"
+sed -i 's/ro.product.system.device=.*/ro.product.system.device=miatoll/' "$SYS_PROP"
+sed -i 's/ro.product.model=.*/ro.product.model=Redmi Note 9 Pro/' "$SYS_PROP"
+sed -i 's/ro.product.name=.*/ro.product.name=miatoll/' "$SYS_PROP"
 
-if [ -f "$TEMP/product.img" ]; then
-    simg2img "$TEMP/product.img" "$TEMP/product_raw.img" 2>/dev/null || mv "$TEMP/product.img" "$TEMP/product_raw.img"
-    sudo mount -o loop,rw "$TEMP/product_raw.img" "$TEMP/mnt_product"
-fi
+# 2. Secure Boot и Debug
+echo "ro.secure=0" >> "$SYS_PROP"
+echo "ro.adb.secure=0" >> "$SYS_PROP"
+echo "ro.debuggable=1" >> "$SYS_PROP"
 
-echo "--- Применение патчей Miatoll ---"
+# 3. Miatoll специфичные фиксы (избежание бутлупов)
+# Удаление dfps (Dynamic FPS), часто ломает порты
+rm -rf "$SYS_ROOT/bin/dfps"
+rm -rf "$TEMP_DIR/d_vendor/bin/dfps"
 
-SYS_PROP="$TEMP/mnt_system/system/build.prop"
-# Если build.prop не там, пробуем корень (для SAR)
-[ ! -f "$SYS_PROP" ] && SYS_PROP="$TEMP/mnt_system/build.prop"
+# 4. Копирование оверлеев (опционально, если структура совпадает)
+# echo "Копирование Overlay..."
+# cp -rf "$TEMP_DIR/d_vendor/overlay/"* "$TEMP_DIR/d_product/overlay/" 2>/dev/null || true
 
-# 1. Изменение идентификаторов устройства
-sudo sed -i 's/ro.product.device=.*/ro.product.device=miatoll/' "$SYS_PROP"
-sudo sed -i 's/ro.product.system.device=.*/ro.product.system.device=miatoll/' "$SYS_PROP"
-sudo sed -i 's/ro.product.name=.*/ro.product.name=miatoll/' "$SYS_PROP"
-
-# 2. Добавление оверлеев (имитация)
-# Копируем оверлеи из вендора базы в продукт порта (если есть место)
-# sudo cp -r "$TEMP/mnt_vendor/overlay/"* "$TEMP/mnt_product/overlay/" 2>/dev/null
-
-# 3. Фикс безопасного загрузчика (Secure Boot flag)
-sudo echo "ro.secure=0" >> "$SYS_PROP"
-sudo echo "ro.adb.secure=0" >> "$SYS_PROP"
-sudo echo "ro.debuggable=1" >> "$SYS_PROP"
-
-# 4. Удаление конфликтующих сервисов (Debloat для Miatoll)
-# Часто удаляют dfps
-sudo rm -rf "$TEMP/mnt_system/system/bin/dfps"
-sudo rm -rf "$TEMP/mnt_vendor/bin/dfps"
-
-# =================REPACK=================
-echo "=== [4/6] Пересборка образов ==="
+echo "=== [5/6] Запаковка в EXT4 ==="
 
 # Функция запаковки
-repack_image() {
-    NAME="$1"
-    MNT_DIR="$2"
-    SIZE_MB="$3" # Размер раздела в МБ (для Miatoll System ~3072, Vendor ~1024)
+make_ext4() {
+    DIR="$1"
+    NAME="$2"
+    SIZE="$3"
     
-    echo "Repacking $NAME..."
-    
-    # Расчет размера байтах + запас 100Мб
-    # sudo du -sb "$MNT_DIR"
-    
-    # Используем make_ext4fs (в Ubuntu это mkuserimg)
-    # Аргументы: OutputFile, Size, MountPoint, SourceDir, fs_config(opt)
-    
-    # Размонтируем перед запаковкой? Нет, mkuserimg берет из папки.
-    # Но для корректности лучше создать новую img из папки.
-    
-    # Важный момент: GHA может не иметь прав на чтение некоторых файлов root
-    # Поэтому запаковываем через sudo
-    
-    # Размер: 3GB = 3221225472 (для System)
-    # Размер: 1.5GB = 1610612736 (для Product)
-    
-    TARGET_SIZE=""
-    if [ "$NAME" == "system" ]; then TARGET_SIZE="3500M"; fi
-    if [ "$NAME" == "vendor" ]; then TARGET_SIZE="1200M"; fi
-    if [ "$NAME" == "product" ]; then TARGET_SIZE="2000M"; fi
-    if [ "$NAME" == "system_ext" ]; then TARGET_SIZE="1500M"; fi
-    
-    # Создаем образ
-    sudo mkuserimg_mke2fs -s "$MNT_DIR" "$OUT/$NAME.img" ext4 "/$NAME" "$TARGET_SIZE" \
-    -L "$NAME" -M "/$NAME"
+    if [ -d "$DIR" ]; then
+        echo "Запаковка $NAME (Size: $SIZE)..."
+        # Используем mkuserimg_mke2fs (стандартный инструмент Android SDK)
+        # Синтаксис: src_dir output_file ext4 mount_point size
+        mkuserimg_mke2fs -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "$SIZE" -L "$NAME" \
+        -M "/$NAME" --inode_size 256
+    fi
 }
 
-repack_image "system" "$TEMP/mnt_system"
-repack_image "vendor" "$TEMP/mnt_vendor"
-[ -d "$TEMP/mnt_product" ] && repack_image "product" "$TEMP/mnt_product"
+# Размеры задаем с запасом (Miatoll partition sizes)
+# System: ~3.5GB, Vendor: ~1.2GB, Product: ~2.5GB
+make_ext4 "$TEMP_DIR/d_system" "system" "3500M"
+make_ext4 "$TEMP_DIR/d_vendor" "vendor" "1500M"
+make_ext4 "$TEMP_DIR/d_product" "product" "2500M"
+make_ext4 "$TEMP_DIR/d_system_ext" "system_ext" "2000M"
 
-# =================CLEANUP=================
-echo "=== [5/6] Очистка ==="
-sudo umount "$TEMP/mnt_system" 2>/dev/null
-sudo umount "$TEMP/mnt_vendor" 2>/dev/null
-sudo umount "$TEMP/mnt_product" 2>/dev/null
-
-# Удаляем исходники, оставляем только OUT
-rm -rf "$INPUT" "$TEMP"
-
-echo "=== Готово! Образы лежат в папке out/ ==="
-ls -lh "$OUT"
+echo "=== [6/6] Завершено ==="
+echo "Файлы для прошивки:"
+ls -lh "$OUT_DIR"
