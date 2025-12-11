@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Останавливать скрипт при критических ошибках
-set -e
+# Не вылетать сразу при ошибках (будем обрабатывать их сами)
+set +e
 
 # Аргументы
 SOURCE_URL="$1"
@@ -16,9 +16,10 @@ TEMP_DIR="$WORKDIR/temp"
 TOOLS_DIR="$WORKDIR/tools"
 
 echo "=== [0/7] Подготовка папок ==="
+rm -rf "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 mkdir -p "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 
-echo "=== [1/7] Загрузка инструментов (Direct Download) ==="
+echo "=== [1/7] Загрузка инструментов ==="
 
 # 1. Payload Dumper
 if [ ! -f "$TOOLS_DIR/pdg" ]; then
@@ -29,7 +30,7 @@ if [ ! -f "$TOOLS_DIR/pdg" ]; then
     chmod +x "$TOOLS_DIR/pdg"
 fi
 
-# 2. MagiskBoot
+# 2. MagiskBoot (из официального APK)
 if [ ! -f "$TOOLS_DIR/magiskboot" ]; then
     echo "Скачивание magiskboot..."
     wget -q "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk" -O "$TEMP_DIR/magisk.apk"
@@ -44,17 +45,15 @@ if [ ! -f "$TOOLS_DIR/sdat2img.py" ]; then
     wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
 fi
 
-# 4. ИНСТРУМЕНТЫ ЗАПАКОВКИ (Скачиваем бинарники напрямую)
-# Это решает проблему "command not found"
-echo "Скачивание инструментов запаковки..."
-BASE_TOOLS_URL="https://raw.githubusercontent.com/erfanoabdi/ErfanGSIs/master/tools"
+# 4. ErfanGSIs Tools (Клонируем репозиторий целиком, чтобы не гадать с ссылками)
+echo "Клонирование инструментов ErfanGSIs..."
+git clone --depth 1 https://github.com/erfanoabdi/ErfanGSIs.git "$TEMP_DIR/ErfanGSIs"
+# Копируем всё содержимое tools
+cp -r "$TEMP_DIR/ErfanGSIs/tools/"* "$TOOLS_DIR/"
+rm -rf "$TEMP_DIR/ErfanGSIs"
 
-wget -q "$BASE_TOOLS_URL/mkuserimg_mke2fs.sh" -O "$TOOLS_DIR/mkuserimg_mke2fs"
-wget -q "$BASE_TOOLS_URL/e2fsdroid" -O "$TOOLS_DIR/e2fsdroid"
-wget -q "$BASE_TOOLS_URL/make_ext4fs" -O "$TOOLS_DIR/make_ext4fs"
-wget -q "$BASE_TOOLS_URL/mke2fs" -O "$TOOLS_DIR/mke2fs"
-
-chmod +x "$TOOLS_DIR"/*
+# Даем права на выполнение всем файлам
+chmod -R +x "$TOOLS_DIR"
 export PATH="$TOOLS_DIR:$PATH"
 
 # --- ФУНКЦИИ ---
@@ -203,9 +202,20 @@ rm -rf "$SYS_ROOT/bin/dfps" "$TEMP_DIR/d_vendor/bin/dfps"
 rm -rf "$SYS_ROOT/recovery-from-boot.p"
 
 echo "=== [7/7] Запаковка в EXT4 ==="
-
-# Важно: добавляем tools в PATH перед запаковкой
 export PATH="$TOOLS_DIR:$PATH"
+
+# Определяем правильный инструмент запаковки
+if [ -f "$TOOLS_DIR/mkuserimg_mke2fs.sh" ]; then
+    PACK_TOOL="bash $TOOLS_DIR/mkuserimg_mke2fs.sh"
+elif [ -f "$TOOLS_DIR/mkuserimg_mke2fs" ]; then
+    PACK_TOOL="bash $TOOLS_DIR/mkuserimg_mke2fs"
+elif [ -f "$TOOLS_DIR/make_ext4fs" ]; then
+    PACK_TOOL="$TOOLS_DIR/make_ext4fs"
+else
+    echo "ОШИБКА: Инструмент запаковки не найден в tools/"
+    ls -R "$TOOLS_DIR"
+    exit 1
+fi
 
 make_ext4() {
     DIR="$1"
@@ -216,9 +226,9 @@ make_ext4() {
         SIZE_MB=$(du -sm "$DIR" | awk '{print $1}')
         NEW_SIZE=$((SIZE_MB + 150))
         
-        echo "Запаковка $NAME.img..."
-        # Вызываем скачанный скрипт напрямую
-        bash "$TOOLS_DIR/mkuserimg_mke2fs" -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "${NEW_SIZE}M" -L "$NAME" -M "/$NAME" --inode_size 256
+        echo "Запаковка $NAME.img с помощью $PACK_TOOL..."
+        # Запускаем найденный инструмент
+        $PACK_TOOL -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "${NEW_SIZE}M" -L "$NAME" -M "/$NAME" --inode_size 256
     fi
 }
 
