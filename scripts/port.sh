@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Не вылетать сразу при ошибках (будем обрабатывать их сами)
+# Не вылетать сразу (обрабатываем ошибки сами)
 set +e
 
 # Аргументы
@@ -30,7 +30,7 @@ if [ ! -f "$TOOLS_DIR/pdg" ]; then
     chmod +x "$TOOLS_DIR/pdg"
 fi
 
-# 2. MagiskBoot (из официального APK)
+# 2. MagiskBoot
 if [ ! -f "$TOOLS_DIR/magiskboot" ]; then
     echo "Скачивание magiskboot..."
     wget -q "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk" -O "$TEMP_DIR/magisk.apk"
@@ -45,14 +45,13 @@ if [ ! -f "$TOOLS_DIR/sdat2img.py" ]; then
     wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
 fi
 
-# 4. ErfanGSIs Tools (Клонируем репозиторий целиком, чтобы не гадать с ссылками)
+# 4. ErfanGSIs Tools
 echo "Клонирование инструментов ErfanGSIs..."
 git clone --depth 1 https://github.com/erfanoabdi/ErfanGSIs.git "$TEMP_DIR/ErfanGSIs"
-# Копируем всё содержимое tools
 cp -r "$TEMP_DIR/ErfanGSIs/tools/"* "$TOOLS_DIR/"
 rm -rf "$TEMP_DIR/ErfanGSIs"
 
-# Даем права на выполнение всем файлам
+# Даем права и добавляем в PATH
 chmod -R +x "$TOOLS_DIR"
 export PATH="$TOOLS_DIR:$PATH"
 
@@ -127,14 +126,11 @@ unzip -o "$INPUT_DIR/base.zip" -d "$TEMP_DIR/base_extracted"
 
 echo "Обработка Base ROM..."
 if [ -f "$TEMP_DIR/base_extracted/payload.bin" ]; then
-    # Пробуем извлечь всё
     "$TOOLS_DIR/pdg" -o "$TEMP_DIR/base_imgs" -p "vendor,boot,dtbo,vbmeta" "$TEMP_DIR/base_extracted/payload.bin"
-    
     find "$TEMP_DIR/base_imgs" -name "vendor.img" -exec mv {} "$TEMP_DIR/vendor.img" \;
     find "$TEMP_DIR/base_imgs" -name "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \;
     find "$TEMP_DIR/base_imgs" -name "dtbo.img" -exec cp {} "$OUT_DIR/dtbo.img" \;
     find "$TEMP_DIR/base_imgs" -name "vbmeta.img" -exec cp {} "$OUT_DIR/vbmeta.img" \;
-
 elif [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
     cd "$TEMP_DIR/base_extracted"
     convert_dat_br "vendor.new.dat.br" "vendor"
@@ -142,11 +138,10 @@ elif [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
     find "$TEMP_DIR/base_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
 fi
 
-# СПАСЕНИЕ: Если boot.img нет
+# Rescue Boot
 if [ ! -f "$TEMP_DIR/boot.img" ]; then
-    echo "ВНИМАНИЕ: Boot.img не найден в Base! Скачиваем Rescue Boot (Stock Miatoll)..."
-    wget -q "https://github.com/d0llbluesv4nus/miatollporter-not-/releases/download/tools/boot_miatoll_stock.img" -O "$TEMP_DIR/boot.img" || \
-    echo "Не удалось скачать rescue boot."
+    echo "ВНИМАНИЕ: Boot.img не найден в Base! Скачиваем Rescue Boot..."
+    wget -q "https://github.com/d0llbluesv4nus/miatollporter-not-/releases/download/tools/boot_miatoll_stock.img" -O "$TEMP_DIR/boot.img" || echo "Rescue boot fail"
 fi
 
 rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
@@ -204,16 +199,13 @@ rm -rf "$SYS_ROOT/recovery-from-boot.p"
 echo "=== [7/7] Запаковка в EXT4 ==="
 export PATH="$TOOLS_DIR:$PATH"
 
-# Определяем правильный инструмент запаковки
+# Находим скрипт запаковки
 if [ -f "$TOOLS_DIR/mkuserimg_mke2fs.sh" ]; then
     PACK_TOOL="bash $TOOLS_DIR/mkuserimg_mke2fs.sh"
 elif [ -f "$TOOLS_DIR/mkuserimg_mke2fs" ]; then
     PACK_TOOL="bash $TOOLS_DIR/mkuserimg_mke2fs"
-elif [ -f "$TOOLS_DIR/make_ext4fs" ]; then
-    PACK_TOOL="$TOOLS_DIR/make_ext4fs"
 else
-    echo "ОШИБКА: Инструмент запаковки не найден в tools/"
-    ls -R "$TOOLS_DIR"
+    echo "ОШИБКА: Инструмент запаковки не найден!"
     exit 1
 fi
 
@@ -224,11 +216,15 @@ make_ext4() {
     if [ -d "$DIR" ]; then
         echo "Расчет размера для $NAME..."
         SIZE_MB=$(du -sm "$DIR" | awk '{print $1}')
-        NEW_SIZE=$((SIZE_MB + 150))
+        NEW_SIZE_MB=$((SIZE_MB + 150))
         
-        echo "Запаковка $NAME.img с помощью $PACK_TOOL..."
-        # Запускаем найденный инструмент
-        $PACK_TOOL -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "${NEW_SIZE}M" -L "$NAME" -M "/$NAME" --inode_size 256
+        # !!! ИСПРАВЛЕНИЕ: Переводим в БАЙТЫ, чтобы Bash не ругался на "M"
+        SIZE_BYTES=$((NEW_SIZE_MB * 1024 * 1024))
+        
+        echo "Запаковка $NAME.img ($NEW_SIZE_MB MB -> $SIZE_BYTES bytes)..."
+        
+        # Передаем размер в байтах (числом)
+        $PACK_TOOL -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "$SIZE_BYTES" -L "$NAME" -M "/$NAME" --inode_size 256
     fi
 }
 
