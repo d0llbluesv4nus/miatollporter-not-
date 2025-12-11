@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Не вылетать сразу
+# Не вылетать сразу (чтобы видеть ошибки)
 set +e
 
 # Аргументы
@@ -19,10 +19,10 @@ echo "=== [0/7] Подготовка ==="
 rm -rf "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 mkdir -p "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 
-# Устанавливаем базовые зависимости (python, unzip и т.д.)
+# Устанавливаем зависимости
 echo "Установка зависимостей..."
 sudo apt-get update > /dev/null
-sudo apt-get install -y python3 python3-pip brotli unzip zip > /dev/null
+sudo apt-get install -y python3 python3-pip brotli unzip zip e2fsprogs > /dev/null
 
 echo "=== [1/7] Загрузка инструментов ==="
 
@@ -49,15 +49,15 @@ if [ ! -f "$TOOLS_DIR/sdat2img.py" ]; then
     wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
 fi
 
-# 4. make_ext4fs (Бинарник для запаковки)
-echo "Скачивание make_ext4fs..."
-# Скачиваем проверенный бинарник
-wget -q "https://github.com/d0llbluesv4nus/miatollporter-not-/releases/download/tools/make_ext4fs" -O "$TOOLS_DIR/make_ext4fs" || \
-wget -q "https://raw.githubusercontent.com/erfanoabdi/ErfanGSIs/master/tools/make_ext4fs" -O "$TOOLS_DIR/make_ext4fs"
+# 4. ErfanGSIs Tools (Клонируем репозиторий)
+# Это нужно для получения правильных mkuserimg_mke2fs.sh, e2fsdroid и mke2fs
+echo "Клонирование инструментов ErfanGSIs..."
+git clone --depth 1 https://github.com/erfanoabdi/ErfanGSIs.git "$TEMP_DIR/ErfanGSIs"
+cp -r "$TEMP_DIR/ErfanGSIs/tools/"* "$TOOLS_DIR/"
+rm -rf "$TEMP_DIR/ErfanGSIs"
 
-chmod +x "$TOOLS_DIR/make_ext4fs"
-
-# Добавляем tools в PATH
+# Даем права и добавляем в PATH
+chmod -R +x "$TOOLS_DIR"
 export PATH="$TOOLS_DIR:$PATH"
 
 # --- ФУНКЦИИ ---
@@ -200,22 +200,32 @@ fi
 rm -rf "$SYS_ROOT/bin/dfps" "$TEMP_DIR/d_vendor/bin/dfps"
 rm -rf "$SYS_ROOT/recovery-from-boot.p"
 
-echo "=== [7/7] Запаковка в EXT4 (make_ext4fs) ==="
+echo "=== [7/7] Запаковка в EXT4 ==="
 
+# Функция запаковки с использованием Bash-скрипта Erfan
+# НО с передачей размера в байтах, чтобы избежать ошибки математики
 make_ext4() {
     DIR="$1"
     NAME="$2"
     
     if [ -d "$DIR" ]; then
-        # Считаем размер в байтах (du -sb) и добавляем запас ~150МБ
-        SIZE=$(du -sb "$DIR" | cut -f1)
-        SIZE=$(($SIZE + 157286400))
+        echo "Расчет размера для $NAME..."
+        SIZE_MB=$(du -sm "$DIR" | awk '{print $1}')
+        # Добавляем 150МБ запаса
+        NEW_SIZE_MB=$((SIZE_MB + 150))
+        # Переводим в байты (Integer), чтобы скрипт не ругался на "M"
+        SIZE_BYTES=$((NEW_SIZE_MB * 1024 * 1024))
         
-        echo "Запаковка $NAME.img (Size: $SIZE bytes)..."
+        echo "Запаковка $NAME.img (Size: $SIZE_BYTES bytes)..."
         
-        # Используем скачанный бинарник напрямую
-        # Параметры: -s (sparse) -L (label) -l (length) -a (mount point) OUTPUT INPUT_DIR
-        "$TOOLS_DIR/make_ext4fs" -s -L "$NAME" -l "$SIZE" -a "$NAME" "$OUT_DIR/$NAME.img" "$DIR"
+        # Запускаем через bash скрипт-обертку, передавая размер в байтах
+        # Обязательно sudo, так как e2fsdroid требует прав
+        sudo bash "$TOOLS_DIR/mkuserimg_mke2fs.sh" -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "$SIZE_BYTES"
+        
+        # Проверяем, создался ли файл
+        if [ ! -s "$OUT_DIR/$NAME.img" ]; then
+            echo "ОШИБКА: Файл $NAME.img пустой или не создан!"
+        fi
     fi
 }
 
