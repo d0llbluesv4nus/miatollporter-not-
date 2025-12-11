@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Не вылетать сразу (чтобы видеть ошибки)
+# Не вылетать сразу
 set +e
 
 # Аргументы
@@ -15,7 +15,7 @@ OUT_DIR="$WORKDIR/out"
 TEMP_DIR="$WORKDIR/temp"
 TOOLS_DIR="$WORKDIR/tools"
 
-echo "=== [0/7] Подготовка ==="
+echo "=== [0/8] Подготовка ==="
 rm -rf "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 mkdir -p "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 
@@ -24,7 +24,7 @@ echo "Установка зависимостей..."
 sudo apt-get update > /dev/null
 sudo apt-get install -y python3 python3-pip brotli unzip zip e2fsprogs > /dev/null
 
-echo "=== [1/7] Загрузка инструментов ==="
+echo "=== [1/8] Загрузка инструментов ==="
 
 # 1. Payload Dumper
 if [ ! -f "$TOOLS_DIR/pdg" ]; then
@@ -49,14 +49,12 @@ if [ ! -f "$TOOLS_DIR/sdat2img.py" ]; then
     wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
 fi
 
-# 4. ErfanGSIs Tools (Клонируем репозиторий)
-# Это нужно для получения правильных mkuserimg_mke2fs.sh, e2fsdroid и mke2fs
+# 4. ErfanGSIs Tools
 echo "Клонирование инструментов ErfanGSIs..."
 git clone --depth 1 https://github.com/erfanoabdi/ErfanGSIs.git "$TEMP_DIR/ErfanGSIs"
 cp -r "$TEMP_DIR/ErfanGSIs/tools/"* "$TOOLS_DIR/"
 rm -rf "$TEMP_DIR/ErfanGSIs"
 
-# Даем права и добавляем в PATH
 chmod -R +x "$TOOLS_DIR"
 export PATH="$TOOLS_DIR:$PATH"
 
@@ -98,13 +96,13 @@ extract_img() {
     fi
 }
 
-echo "=== [2/7] Загрузка прошивок ==="
+echo "=== [2/8] Загрузка прошивок ==="
 echo "Скачивание Source..."
 aria2c -x16 -s16 -k1M "$SOURCE_URL" -d "$INPUT_DIR" -o source.zip
 echo "Скачивание Base..."
 aria2c -x16 -s16 -k1M "$BASE_URL" -d "$INPUT_DIR" -o base.zip
 
-echo "=== [3/7] Извлечение образов ==="
+echo "=== [3/8] Извлечение образов ==="
 
 # --- SOURCE ---
 mkdir -p "$TEMP_DIR/source_extracted"
@@ -150,7 +148,7 @@ fi
 
 rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
 
-echo "=== [4/7] Распаковка файловых систем ==="
+echo "=== [4/8] Распаковка файловых систем ==="
 [ -f "$TEMP_DIR/system.img" ] && extract_img "$TEMP_DIR/system.img" "$TEMP_DIR/d_system"
 [ -f "$TEMP_DIR/product.img" ] && extract_img "$TEMP_DIR/product.img" "$TEMP_DIR/d_product"
 [ -f "$TEMP_DIR/system_ext.img" ] && extract_img "$TEMP_DIR/system_ext.img" "$TEMP_DIR/d_system_ext"
@@ -158,7 +156,7 @@ echo "=== [4/7] Распаковка файловых систем ==="
 
 rm -f "$TEMP_DIR/"*.img
 
-echo "=== [5/7] Патчинг Boot (Permissive) ==="
+echo "=== [5/8] Патчинг Boot (Permissive) ==="
 if [ -f "$TEMP_DIR/boot.img" ]; then
     mkdir -p "$TEMP_DIR/boot_edit"
     cp "$TEMP_DIR/boot.img" "$TEMP_DIR/boot_edit/boot.img"
@@ -179,7 +177,7 @@ if [ -f "$TEMP_DIR/boot.img" ]; then
     cd "$WORKDIR"
 fi
 
-echo "=== [6/7] Патчинг системы для Miatoll ==="
+echo "=== [6/8] Патчинг системы для Miatoll ==="
 if [ -f "$TEMP_DIR/d_system/system/build.prop" ]; then
     SYS_ROOT="$TEMP_DIR/d_system/system"
 else
@@ -200,10 +198,57 @@ fi
 rm -rf "$SYS_ROOT/bin/dfps" "$TEMP_DIR/d_vendor/bin/dfps"
 rm -rf "$SYS_ROOT/recovery-from-boot.p"
 
-echo "=== [7/7] Запаковка в EXT4 ==="
+# =========================================================
+# НОВЫЙ БЛОК: ОЧИСТКА МУСОРА (DEBLOAT)
+# =========================================================
+echo "=== [7/8] Удаление мусора (Debloat) ==="
 
-# Функция запаковки с использованием Bash-скрипта Erfan
-# НО с передачей размера в байтах, чтобы избежать ошибки математики
+# Удаляем тяжелые Google и Xiaomi приложения из Product
+# Это сэкономит около 2-3 ГБ
+echo "Удаление приложений из product..."
+
+# Список на удаление (папки внутри product/app и product/priv-app)
+TO_DELETE=(
+    "YouTube"
+    "Maps"
+    "Photos"
+    "Velvet" # Google App
+    "Music2" # Youtube Music
+    "Videos"
+    "Duo"
+    "Gmail2"
+    "Chrome"
+    "Facebook"
+    "Netflix"
+    "MiVideo"
+    "MiMusic"
+    "MiBrowser"
+    "Browser"
+    "Email"
+    "CleanMaster"
+    "HybridAccessory"
+    "Health"
+    "Weather"
+)
+
+# Проходимся и удаляем
+for APP in "${TO_DELETE[@]}"; do
+    rm -rf "$TEMP_DIR/d_product/app/$APP"
+    rm -rf "$TEMP_DIR/d_product/priv-app/$APP"
+    rm -rf "$TEMP_DIR/d_product/product/app/$APP"
+    rm -rf "$TEMP_DIR/d_product/product/priv-app/$APP"
+done
+
+# Удаляем тяжелые файлы media (видео, звуки)
+rm -rf "$TEMP_DIR/d_product/media/bootanimation.zip"
+rm -rf "$TEMP_DIR/d_product/product/media/bootanimation.zip"
+
+echo "Очистка завершена."
+
+# =========================================================
+
+echo "=== [8/8] Запаковка в EXT4 ==="
+
 make_ext4() {
     DIR="$1"
     NAME="$2"
@@ -211,20 +256,14 @@ make_ext4() {
     if [ -d "$DIR" ]; then
         echo "Расчет размера для $NAME..."
         SIZE_MB=$(du -sm "$DIR" | awk '{print $1}')
-        # Добавляем 150МБ запаса
         NEW_SIZE_MB=$((SIZE_MB + 150))
-        # Переводим в байты (Integer), чтобы скрипт не ругался на "M"
         SIZE_BYTES=$((NEW_SIZE_MB * 1024 * 1024))
         
         echo "Запаковка $NAME.img (Size: $SIZE_BYTES bytes)..."
-        
-        # Запускаем через bash скрипт-обертку, передавая размер в байтах
-        # Обязательно sudo, так как e2fsdroid требует прав
         sudo bash "$TOOLS_DIR/mkuserimg_mke2fs.sh" -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "$SIZE_BYTES"
         
-        # Проверяем, создался ли файл
         if [ ! -s "$OUT_DIR/$NAME.img" ]; then
-            echo "ОШИБКА: Файл $NAME.img пустой или не создан!"
+            echo "ОШИБКА: Файл $NAME.img пустой!"
         fi
     fi
 }
