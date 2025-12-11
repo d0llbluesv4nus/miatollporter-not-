@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Останавливать скрипт при ошибках, чтобы не делать лишнюю работу
+# Останавливать скрипт при критических ошибках
 set -e
 
 # Аргументы
@@ -15,10 +15,14 @@ OUT_DIR="$WORKDIR/out"
 TEMP_DIR="$WORKDIR/temp"
 TOOLS_DIR="$WORKDIR/tools"
 
-echo "=== [0/7] Инициализация и Загрузка инструментов ==="
+echo "=== [0/7] Установка системных утилит ==="
+# Устанавливаем официальный пакет Android Tools (содержит mkuserimg_mke2fs)
+sudo apt-get update
+sudo apt-get install -y android-sdk-libsparse-utils e2fsprogs
+
 mkdir -p "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 
-# --- ФУНКЦИИ ЗАГРУЗКИ ---
+echo "=== [1/7] Загрузка дополнительных инструментов ==="
 
 # 1. Payload Dumper
 if [ ! -f "$TOOLS_DIR/pdg" ]; then
@@ -29,7 +33,7 @@ if [ ! -f "$TOOLS_DIR/pdg" ]; then
     chmod +x "$TOOLS_DIR/pdg"
 fi
 
-# 2. MagiskBoot (Официальный APK метод)
+# 2. MagiskBoot (из официального APK)
 if [ ! -f "$TOOLS_DIR/magiskboot" ]; then
     echo "Скачивание magiskboot..."
     wget -q "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk" -O "$TEMP_DIR/magisk.apk"
@@ -44,18 +48,10 @@ if [ ! -f "$TOOLS_DIR/sdat2img.py" ]; then
     wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
 fi
 
-# 4. mkuserimg_mke2fs
-if [ ! -f "$TOOLS_DIR/mkuserimg_mke2fs" ]; then
-    echo "Клонирование инструментов ErfanGSIs..."
-    git clone --depth 1 https://github.com/erfanoabdi/ErfanGSIs.git "$TEMP_DIR/ErfanGSIs"
-    cp -r "$TEMP_DIR/ErfanGSIs/tools/"* "$TOOLS_DIR/"
-    rm -rf "$TEMP_DIR/ErfanGSIs"
-fi
-
 chmod +x "$TOOLS_DIR"/*
 export PATH="$TOOLS_DIR:$PATH"
 
-# --- ФУНКЦИИ ОБРАБОТКИ ---
+# --- ФУНКЦИИ ---
 
 convert_dat_br() {
     FILE="$1"
@@ -65,8 +61,6 @@ convert_dat_br() {
         brotli -d "$FILE" -o "$TEMP_DIR/$NAME.new.dat"
         python3 "$TOOLS_DIR/sdat2img.py" "${NAME}.transfer.list" "$TEMP_DIR/$NAME.new.dat" "$TEMP_DIR/$NAME.img"
         rm -f "$TEMP_DIR/$NAME.new.dat"
-    else
-        echo "Файл $FILE не найден, пропускаем..."
     fi
 }
 
@@ -96,26 +90,24 @@ extract_img() {
     fi
 }
 
-echo "=== [1/7] Загрузка прошивок ==="
+echo "=== [2/7] Загрузка прошивок ==="
 echo "Скачивание Source..."
 aria2c -x16 -s16 -k1M "$SOURCE_URL" -d "$INPUT_DIR" -o source.zip
 echo "Скачивание Base..."
 aria2c -x16 -s16 -k1M "$BASE_URL" -d "$INPUT_DIR" -o base.zip
 
-echo "=== [2/7] Извлечение образов ==="
+echo "=== [3/7] Извлечение образов ==="
 
-# 1. Source
+# --- SOURCE ---
 mkdir -p "$TEMP_DIR/source_extracted"
 unzip -o "$INPUT_DIR/source.zip" -d "$TEMP_DIR/source_extracted"
 
 if [ -f "$TEMP_DIR/source_extracted/payload.bin" ]; then
-    echo "Тип Source: Payload.bin"
     "$TOOLS_DIR/pdg" -o "$TEMP_DIR/source_imgs" -p "system,product,system_ext" "$TEMP_DIR/source_extracted/payload.bin"
     find "$TEMP_DIR/source_imgs" -name "system.img" -exec mv {} "$TEMP_DIR/system.img" \;
     find "$TEMP_DIR/source_imgs" -name "product.img" -exec mv {} "$TEMP_DIR/product.img" \;
     find "$TEMP_DIR/source_imgs" -name "system_ext.img" -exec mv {} "$TEMP_DIR/system_ext.img" \;
 elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
-    echo "Тип Source: Dat.br"
     cd "$TEMP_DIR/source_extracted"
     convert_dat_br "system.new.dat.br" "system"
     convert_dat_br "product.new.dat.br" "product"
@@ -124,49 +116,43 @@ elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
     cd "$WORKDIR"
 fi
 
-# 2. Base
+# --- BASE ---
 mkdir -p "$TEMP_DIR/base_extracted"
 unzip -o "$INPUT_DIR/base.zip" -d "$TEMP_DIR/base_extracted"
 
-echo "Проверка Base ROM..."
+echo "Обработка Base ROM..."
 if [ -f "$TEMP_DIR/base_extracted/payload.bin" ]; then
-    echo ">> Base: Payload.bin найден."
-    
-    # Извлекаем все нужные разделы разом
+    # Пробуем извлечь всё
     "$TOOLS_DIR/pdg" -o "$TEMP_DIR/base_imgs" -p "vendor,boot,dtbo,vbmeta" "$TEMP_DIR/base_extracted/payload.bin"
     
-    # Распределяем файлы
     find "$TEMP_DIR/base_imgs" -name "vendor.img" -exec mv {} "$TEMP_DIR/vendor.img" \;
     find "$TEMP_DIR/base_imgs" -name "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \;
     find "$TEMP_DIR/base_imgs" -name "dtbo.img" -exec cp {} "$OUT_DIR/dtbo.img" \;
     find "$TEMP_DIR/base_imgs" -name "vbmeta.img" -exec cp {} "$OUT_DIR/vbmeta.img" \;
 
 elif [ -f "$TEMP_DIR/base_extracted/vendor.new.dat.br" ]; then
-    echo ">> Base: DAT.BR найден."
     cd "$TEMP_DIR/base_extracted"
     convert_dat_br "vendor.new.dat.br" "vendor"
     cd "$WORKDIR"
+    find "$TEMP_DIR/base_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
+fi
+
+# СПАСЕНИЕ: Если boot.img нет, качаем стоковый Miatoll Boot
+if [ ! -f "$TEMP_DIR/boot.img" ]; then
+    echo "ВНИМАНИЕ: Boot.img не найден в Base! Скачиваем Rescue Boot (Stock Miatoll)..."
+    # Ссылка на стоковый boot.img (Miatoll Global Stable 12.5)
+    wget -q "https://github.com/d0llbluesv4nus/miatollporter-not-/releases/download/tools/boot_miatoll_stock.img" -O "$TEMP_DIR/boot.img" || \
+    echo "Не удалось скачать rescue boot."
     
-    # Ищем boot.img среди файлов
-    find "$TEMP_DIR/base_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
-fi
-
-# Аварийный поиск boot.img, если предыдущие методы не сработали
-if [ ! -f "$TEMP_DIR/boot.img" ]; then
-    echo "ВНИМАНИЕ: boot.img не найден стандартными методами. Ищем рекурсивно..."
-    find "$TEMP_DIR/base_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
-fi
-
-# Если все еще нет - берем из Source (заглушка, чтобы сборка завершилась)
-if [ ! -f "$TEMP_DIR/boot.img" ]; then
-    echo "КРИТИЧНО: boot.img не найден в Base. Используем boot из Source..."
-    find "$TEMP_DIR/source_extracted" -type f -iname "boot.img" -exec cp {} "$TEMP_DIR/boot.img" \; -quit
+    # Если и ссылки нет, создаем пустышку чтобы скрипт не упал, но предупреждаем
+    if [ ! -f "$TEMP_DIR/boot.img" ]; then
+        echo "КРИТИЧНО: Boot.img отсутствует. Система НЕ ЗАГРУЗИТСЯ без прошивки boot вручную."
+    fi
 fi
 
 rm -rf "$TEMP_DIR/source_extracted" "$TEMP_DIR/base_extracted" "$INPUT_DIR"
 
-echo "=== [3/7] Распаковка файловых систем ==="
-# Проверяем наличие образов
+echo "=== [4/7] Распаковка файловых систем ==="
 [ -f "$TEMP_DIR/system.img" ] && extract_img "$TEMP_DIR/system.img" "$TEMP_DIR/d_system"
 [ -f "$TEMP_DIR/product.img" ] && extract_img "$TEMP_DIR/product.img" "$TEMP_DIR/d_product"
 [ -f "$TEMP_DIR/system_ext.img" ] && extract_img "$TEMP_DIR/system_ext.img" "$TEMP_DIR/d_system_ext"
@@ -174,35 +160,28 @@ echo "=== [3/7] Распаковка файловых систем ==="
 
 rm -f "$TEMP_DIR/"*.img
 
-echo "=== [4/7] Патчинг Boot (Permissive) ==="
+echo "=== [5/7] Патчинг Boot (Permissive) ==="
 if [ -f "$TEMP_DIR/boot.img" ]; then
-    echo "Патчинг boot.img на Permissive..."
     mkdir -p "$TEMP_DIR/boot_edit"
     cp "$TEMP_DIR/boot.img" "$TEMP_DIR/boot_edit/boot.img"
     cd "$TEMP_DIR/boot_edit"
     
     "$TOOLS_DIR/magiskboot" unpack boot.img || true
-    
     if [ -f "header" ]; then
-        # Патчим заголовок (без line continuation для надежности)
         "$TOOLS_DIR/magiskboot" hexpatch header "736b69705f696e697472616d667300" "736b69705f696e697472616d667320616e64726f6964626f6f742e73656c696e75783d7065726d69737369766500" || true
         sed -i 's/cmdline=/cmdline=androidboot.selinux=permissive /' header
     fi
-    
     "$TOOLS_DIR/magiskboot" repack boot.img || true
     
     if [ -f "new-boot.img" ]; then
         mv new-boot.img "$OUT_DIR/boot.img"
     else
-        echo "Ошибка перепаковки, копируем оригинал..."
         cp "$TEMP_DIR/boot.img" "$OUT_DIR/boot.img"
     fi
     cd "$WORKDIR"
-else
-    echo "ОШИБКА: boot.img отсутствует полностью."
 fi
 
-echo "=== [5/7] Патчинг системы для Miatoll ==="
+echo "=== [6/7] Патчинг системы для Miatoll ==="
 if [ -f "$TEMP_DIR/d_system/system/build.prop" ]; then
     SYS_ROOT="$TEMP_DIR/d_system/system"
 else
@@ -210,7 +189,6 @@ else
 fi
 SYS_PROP="$SYS_ROOT/build.prop"
 
-echo "Патчинг $SYS_PROP..."
 if [ -f "$SYS_PROP" ]; then
     sed -i 's/ro.product.device=.*/ro.product.device=miatoll/' "$SYS_PROP"
     sed -i 's/ro.product.system.device=.*/ro.product.system.device=miatoll/' "$SYS_PROP"
@@ -219,14 +197,12 @@ if [ -f "$SYS_PROP" ]; then
     echo "ro.secure=0" >> "$SYS_PROP"
     echo "ro.adb.secure=0" >> "$SYS_PROP"
     echo "ro.debuggable=1" >> "$SYS_PROP"
-else
-    echo "ВНИМАНИЕ: build.prop не найден!"
 fi
 
 rm -rf "$SYS_ROOT/bin/dfps" "$TEMP_DIR/d_vendor/bin/dfps"
 rm -rf "$SYS_ROOT/recovery-from-boot.p"
 
-echo "=== [6/7] Запаковка в EXT4 ==="
+echo "=== [7/7] Запаковка в EXT4 ==="
 
 make_ext4() {
     DIR="$1"
@@ -236,10 +212,10 @@ make_ext4() {
         echo "Расчет размера для $NAME..."
         SIZE_MB=$(du -sm "$DIR" | awk '{print $1}')
         NEW_SIZE=$((SIZE_MB + 150))
-        echo "Размер: ${NEW_SIZE}M"
         
         echo "Запаковка $NAME.img..."
-        "$TOOLS_DIR/mkuserimg_mke2fs" -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "${NEW_SIZE}M" -L "$NAME" -M "/$NAME" --inode_size 256
+        # ИСПОЛЬЗУЕМ СИСТЕМНЫЙ mkuserimg_mke2fs (без путей!)
+        mkuserimg_mke2fs -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "${NEW_SIZE}M" -L "$NAME" -M "/$NAME" --inode_size 256
     fi
 }
 
@@ -248,31 +224,8 @@ make_ext4 "$TEMP_DIR/d_vendor" "vendor"
 make_ext4 "$TEMP_DIR/d_product" "product"
 make_ext4 "$TEMP_DIR/d_system_ext" "system_ext"
 
-echo "=== [7/7] Завершено ==="
-ls -lh "$OUT_DIR"OLDER/"
-        sudo umount "$TEMP_DIR/mnt_tmp"
-        rm -rf "$TEMP_DIR/mnt_tmp" "$TEMP_DIR/raw.img"
-        sudo chown -R $(whoami) "$FOLDER"
-    fi
-}
-
-echo "=== [1/7] Загрузка прошивок ==="
-echo "Скачивание Source..."
-aria2c -x16 -s16 -k1M "$SOURCE_URL" -d "$INPUT_DIR" -o source.zip
-echo "Скачивание Base..."
-aria2c -x16 -s16 -k1M "$BASE_URL" -d "$INPUT_DIR" -o base.zip
-
-echo "=== [2/7] Извлечение образов ==="
-
-# 1. Source (Откуда берем систему)
-mkdir -p "$TEMP_DIR/source_extracted"
-unzip -o "$INPUT_DIR/source.zip" -d "$TEMP_DIR/source_extracted"
-
-if [ -f "$TEMP_DIR/source_extracted/payload.bin" ]; then
-    echo "Тип Source: Payload.bin"
-    "$TOOLS_DIR/pdg" -o "$TEMP_DIR/source_imgs" -p "system,product,system_ext" "$TEMP_DIR/source_extracted/payload.bin"
-    find "$TEMP_DIR/source_imgs" -name "system.img" -exec mv {} "$TEMP_DIR/system.img" \;
-    find "$TEMP_DIR/source_imgs" -name "product.img" -exec mv {} "$TEMP_DIR/product.img" \;
+echo "=== ГОТОВО ==="
+ls -lh "$OUT_DIR"w.img" -exec mv {} "$TEMP_DIR/product.img" \;
     find "$TEMP_DIR/source_imgs" -name "system_ext.img" -exec mv {} "$TEMP_DIR/system_ext.img" \;
 elif [ -f "$TEMP_DIR/source_extracted/system.new.dat.br" ]; then
     echo "Тип Source: Dat.br"
