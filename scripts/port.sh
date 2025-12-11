@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Останавливать скрипт при ошибках
-set -e
+# Не вылетать сразу
+set +e
 
 # Аргументы
 SOURCE_URL="$1"
@@ -15,20 +15,18 @@ OUT_DIR="$WORKDIR/out"
 TEMP_DIR="$WORKDIR/temp"
 TOOLS_DIR="$WORKDIR/tools"
 
-echo "=== [0/7] Подготовка окружения ==="
-# 1. Очистка
+echo "=== [0/7] Подготовка ==="
 rm -rf "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 mkdir -p "$INPUT_DIR" "$OUT_DIR" "$TEMP_DIR" "$TOOLS_DIR"
 
-# 2. Установка системных инструментов (Самый надежный метод)
-# android-sdk-libsparse-utils дает нам команду mkuserimg_mke2fs
+# Устанавливаем базовые зависимости (python, unzip и т.д.)
 echo "Установка зависимостей..."
 sudo apt-get update > /dev/null
-sudo apt-get install -y python3 python3-pip android-sdk-libsparse-utils e2fsprogs brotli unzip zip > /dev/null
+sudo apt-get install -y python3 python3-pip brotli unzip zip > /dev/null
 
-echo "=== [1/7] Загрузка дополнительных инструментов ==="
+echo "=== [1/7] Загрузка инструментов ==="
 
-# 1. Payload Dumper Go
+# 1. Payload Dumper
 if [ ! -f "$TOOLS_DIR/pdg" ]; then
     echo "Скачивание payload-dumper-go..."
     wget -q "https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/payload-dumper-go_1.2.2_linux_amd64.tar.gz" -O "$TOOLS_DIR/pdg.tar.gz"
@@ -37,7 +35,7 @@ if [ ! -f "$TOOLS_DIR/pdg" ]; then
     chmod +x "$TOOLS_DIR/pdg"
 fi
 
-# 2. MagiskBoot (из официального APK)
+# 2. MagiskBoot
 if [ ! -f "$TOOLS_DIR/magiskboot" ]; then
     echo "Скачивание magiskboot..."
     wget -q "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk" -O "$TEMP_DIR/magisk.apk"
@@ -50,6 +48,14 @@ fi
 if [ ! -f "$TOOLS_DIR/sdat2img.py" ]; then
     wget -q https://raw.githubusercontent.com/xpirt/sdat2img/master/sdat2img.py -O "$TOOLS_DIR/sdat2img.py"
 fi
+
+# 4. make_ext4fs (Бинарник для запаковки)
+echo "Скачивание make_ext4fs..."
+# Скачиваем проверенный бинарник
+wget -q "https://github.com/d0llbluesv4nus/miatollporter-not-/releases/download/tools/make_ext4fs" -O "$TOOLS_DIR/make_ext4fs" || \
+wget -q "https://raw.githubusercontent.com/erfanoabdi/ErfanGSIs/master/tools/make_ext4fs" -O "$TOOLS_DIR/make_ext4fs"
+
+chmod +x "$TOOLS_DIR/make_ext4fs"
 
 # Добавляем tools в PATH
 export PATH="$TOOLS_DIR:$PATH"
@@ -194,7 +200,7 @@ fi
 rm -rf "$SYS_ROOT/bin/dfps" "$TEMP_DIR/d_vendor/bin/dfps"
 rm -rf "$SYS_ROOT/recovery-from-boot.p"
 
-echo "=== [7/7] Запаковка в EXT4 (System Tool) ==="
+echo "=== [7/7] Запаковка в EXT4 (make_ext4fs) ==="
 
 make_ext4() {
     DIR="$1"
@@ -207,9 +213,9 @@ make_ext4() {
         
         echo "Запаковка $NAME.img (Size: $SIZE bytes)..."
         
-        # Используем системный mkuserimg_mke2fs
-        # Синтаксис: mkuserimg_mke2fs -s SRC_DIR OUTPUT_FILE EXT4 MOUNT_POINT SIZE [LABEL]
-        mkuserimg_mke2fs -s "$DIR" "$OUT_DIR/$NAME.img" ext4 "/$NAME" "$SIZE"
+        # Используем скачанный бинарник напрямую
+        # Параметры: -s (sparse) -L (label) -l (length) -a (mount point) OUTPUT INPUT_DIR
+        "$TOOLS_DIR/make_ext4fs" -s -L "$NAME" -l "$SIZE" -a "$NAME" "$OUT_DIR/$NAME.img" "$DIR"
     fi
 }
 
